@@ -1,5 +1,6 @@
 # This code is modified from https://github.com/mozillazg/pypinyin-g2pW
 
+import hashlib
 import pickle
 import os
 
@@ -14,20 +15,38 @@ current_file_path = os.path.dirname(__file__)
 CACHE_PATH = os.path.join(current_file_path, "polyphonic.pickle")
 PP_DICT_PATH = os.path.join(current_file_path, "polyphonic.rep")
 PP_FIX_DICT_PATH = os.path.join(current_file_path, "polyphonic-fix.rep")
+MD5_PATH = os.path.join(current_file_path, "polyphonic.md5")
+
+def get_file_md5(file_path):
+    if not os.path.exists(file_path):
+        return ""
+    hasher = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 class G2PWPinyin(Pinyin):
-    def __init__(self, model_dir='G2PWModel/', model_source=None,
-                 enable_non_tradional_chinese=True,
-                 v_to_u=False, neutral_tone_with_five=False, tone_sandhi=False, **kwargs):
+    def __init__(
+        self,
+        model_dir="G2PWModel/",
+        model_source=None,
+        enable_non_tradional_chinese=True,
+        v_to_u=False,
+        neutral_tone_with_five=False,
+        tone_sandhi=False,
+        **kwargs,
+    ):
         self._g2pw = G2PWOnnxConverter(
             model_dir=model_dir,
-            style='pinyin',
+            style="pinyin",
             model_source=model_source,
             enable_non_tradional_chinese=enable_non_tradional_chinese,
         )
         self._converter = Converter(
-            self._g2pw, v_to_u=v_to_u,
+            self._g2pw,
+            v_to_u=v_to_u,
             neutral_tone_with_five=neutral_tone_with_five,
             tone_sandhi=tone_sandhi,
         )
@@ -37,31 +56,25 @@ class G2PWPinyin(Pinyin):
 
 
 class Converter(UltimateConverter):
-    def __init__(self, g2pw_instance, v_to_u=False,
-                 neutral_tone_with_five=False,
-                 tone_sandhi=False, **kwargs):
+    def __init__(self, g2pw_instance, v_to_u=False, neutral_tone_with_five=False, tone_sandhi=False, **kwargs):
         super(Converter, self).__init__(
-            v_to_u=v_to_u,
-            neutral_tone_with_five=neutral_tone_with_five,
-            tone_sandhi=tone_sandhi, **kwargs)
+            v_to_u=v_to_u, neutral_tone_with_five=neutral_tone_with_five, tone_sandhi=tone_sandhi, **kwargs
+        )
 
         self._g2pw = g2pw_instance
 
     def convert(self, words, style, heteronym, errors, strict, **kwargs):
         pys = []
         if RE_HANS.match(words):
-            pys = self._to_pinyin(words, style=style, heteronym=heteronym,
-                                  errors=errors, strict=strict)
+            pys = self._to_pinyin(words, style=style, heteronym=heteronym, errors=errors, strict=strict)
             post_data = self.post_pinyin(words, heteronym, pys)
             if post_data is not None:
                 pys = post_data
 
-            pys = self.convert_styles(
-                pys, words, style, heteronym, errors, strict)
+            pys = self.convert_styles(pys, words, style, heteronym, errors, strict)
 
         else:
-            py = self.handle_nopinyin(words, style=style, errors=errors,
-                                      heteronym=heteronym, strict=strict)
+            py = self.handle_nopinyin(words, style=style, errors=errors, heteronym=heteronym, strict=strict)
             if py:
                 pys.extend(py)
 
@@ -73,13 +86,11 @@ class Converter(UltimateConverter):
         g2pw_pinyin = self._g2pw(han)
 
         if not g2pw_pinyin:  # g2pw 不支持的汉字改为使用 pypinyin 原有逻辑
-            return super(Converter, self).convert(
-                         han, Style.TONE, heteronym, errors, strict, **kwargs)
+            return super(Converter, self).convert(han, Style.TONE, heteronym, errors, strict, **kwargs)
 
         for i, item in enumerate(g2pw_pinyin[0]):
             if item is None:  # g2pw 不支持的汉字改为使用 pypinyin 原有逻辑
-                py = super(Converter, self).convert(
-                           han[i], Style.TONE, heteronym, errors, strict, **kwargs)
+                py = super(Converter, self).convert(han[i], Style.TONE, heteronym, errors, strict, **kwargs)
                 pinyins.extend(py)
             else:
                 pinyins.append([to_tone(item)])
@@ -104,7 +115,7 @@ def _remove_dup_and_empty(lst_list):
         if lst:
             new_lst_list.append(lst)
         else:
-            new_lst_list.append([''])
+            new_lst_list.append([""])
 
     return new_lst_list
 
@@ -115,40 +126,54 @@ def cache_dict(polyphonic_dict, file_path):
 
 
 def get_dict():
-    if os.path.exists(CACHE_PATH):
+    new_md5 = get_file_md5(PP_DICT_PATH) + get_file_md5(PP_FIX_DICT_PATH)
+    old_md5 = ""
+    if os.path.exists(MD5_PATH):
+        with open(MD5_PATH, "r", encoding="utf-8") as f:
+            old_md5 = f.read().strip()
+    need_rebuild = (not os.path.exists(CACHE_PATH)) or (new_md5 != old_md5)
+
+    if not need_rebuild:
         with open(CACHE_PATH, "rb") as pickle_file:
             polyphonic_dict = pickle.load(pickle_file)
     else:
+        print("Rebuilding Polyphonic Dictionary: " + f"{old_md5} -> {new_md5}")
         polyphonic_dict = read_dict()
         cache_dict(polyphonic_dict, CACHE_PATH)
-
+        with open(MD5_PATH, "w", encoding="utf-8") as f:
+            f.write(new_md5)
     return polyphonic_dict
 
 
 def read_dict():
     polyphonic_dict = {}
-    with open(PP_DICT_PATH,encoding="utf-8") as f:
+    with open(PP_DICT_PATH, encoding="utf-8") as f:
         line = f.readline()
         while line:
-            key, value_str = line.split(':')
+            key, value_str = line.split(":")
             value = eval(value_str.strip())
             polyphonic_dict[key.strip()] = value
             line = f.readline()
-    with open(PP_FIX_DICT_PATH,encoding="utf-8") as f:
+    with open(PP_FIX_DICT_PATH, encoding="utf-8") as f:
         line = f.readline()
         while line:
-            key, value_str = line.split(':')
+            key, value_str = line.split(":")
             value = eval(value_str.strip())
             polyphonic_dict[key.strip()] = value
             line = f.readline()
     return polyphonic_dict
 
 
-def correct_pronunciation(word,word_pinyins):
-    if word in pp_dict:
-        word_pinyins = pp_dict[word]
-
-    return word_pinyins
+def correct_pronunciation(word, word_pinyins):
+    new_pinyins = pp_dict.get(word, "")
+    if new_pinyins == "":
+        for idx, w in enumerate(word):
+            w_pinyin = pp_dict.get(w, "")
+            if w_pinyin != "":
+                word_pinyins[idx] = w_pinyin[0]
+        return word_pinyins
+    else:
+        return new_pinyins
 
 
 pp_dict = get_dict()
